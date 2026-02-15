@@ -22,6 +22,9 @@
 
 #include <unistd.h>
 
+#include "nodes/print.h"
+#include "commands/explain.h"
+
 #if defined(WIN32)
 #include <crtdbg.h>
 #endif
@@ -40,7 +43,10 @@
 #include "utils/memutils.h"
 #include "utils/pg_locale.h"
 #include "utils/ps_status.h"
-
+#include "access/xact.h"
+#include "parser/analyze.h"
+#include "catalog/pg_type_d.h"
+#include "pgplanner/pgplanner.h"
 
 const char *progname;
 static bool reached_main = false;
@@ -52,154 +58,518 @@ static void help(const char *progname);
 static void check_root(const char *progname);
 
 
+/* ----------------------------------------------------------------
+ *	Sample callbacks for demonstration
+ * ----------------------------------------------------------------
+ */
+
+static PgPlannerColumn my_table_columns[] = {
+	{ "a", INT4OID, -1 }
+};
+
+static PgPlannerRelationInfo my_table_info = {
+	.relid = 1337,
+	.relname = "my_table",
+	.relkind = 'r',		/* RELKIND_RELATION */
+	.natts = 1,
+	.columns = my_table_columns
+};
+
+static PgPlannerColumn hits_table_columns[] = {
+	{ "watchid", INT8OID, -1 },
+	{ "javaenable", INT2OID, -1 },
+	{ "title", TEXTOID, -1 },
+	{ "goodevent", INT2OID, -1 },
+	{ "eventtime", TIMESTAMPOID, -1 },
+	{ "eventdate", DATEOID, -1 },
+	{ "counterid", INT4OID, -1 },
+	{ "clientip", INT4OID, -1 },
+	{ "regionid", INT4OID, -1 },
+	{ "userid", INT8OID, -1 },
+	{ "counterclass", INT2OID, -1 },
+	{ "os", INT2OID, -1 },
+	{ "useragent", INT2OID, -1 },
+	{ "url", TEXTOID, -1 },
+	{ "referer", TEXTOID, -1 },
+	{ "isrefresh", INT2OID, -1 },
+	{ "referercategoryid", INT2OID, -1 },
+	{ "refererregionid", INT4OID, -1 },
+	{ "urlcategoryid", INT2OID, -1 },
+	{ "urlregionid", INT4OID, -1 },
+	{ "resolutionwidth", INT2OID, -1 },
+	{ "resolutionheight", INT2OID, -1 },
+	{ "resolutiondepth", INT2OID, -1 },
+	{ "flashmajor", INT2OID, -1 },
+	{ "flashminor", INT2OID, -1 },
+	{ "flashminor2", TEXTOID, -1 },
+	{ "netmajor", INT2OID, -1 },
+	{ "netminor", INT2OID, -1 },
+	{ "useragentmajor", INT2OID, -1 },
+	{ "useragentminor", VARCHAROID, 259 },
+	{ "cookieenable", INT2OID, -1 },
+	{ "javascriptenable", INT2OID, -1 },
+	{ "ismobile", INT2OID, -1 },
+	{ "mobilephone", INT2OID, -1 },
+	{ "mobilephonemodel", TEXTOID, -1 },
+	{ "params", TEXTOID, -1 },
+	{ "ipnetworkid", INT4OID, -1 },
+	{ "traficsourceid", INT2OID, -1 },
+	{ "searchengineid", INT2OID, -1 },
+	{ "searchphrase", TEXTOID, -1 },
+	{ "advengineid", INT2OID, -1 },
+	{ "isartifical", INT2OID, -1 },
+	{ "windowclientwidth", INT2OID, -1 },
+	{ "windowclientheight", INT2OID, -1 },
+	{ "clienttimezone", INT2OID, -1 },
+	{ "clienteventtime", TIMESTAMPOID, -1 },
+	{ "silverlightversion1", INT2OID, -1 },
+	{ "silverlightversion2", INT2OID, -1 },
+	{ "silverlightversion3", INT4OID, -1 },
+	{ "silverlightversion4", INT2OID, -1 },
+	{ "pagecharset", TEXTOID, -1 },
+	{ "codeversion", INT4OID, -1 },
+	{ "islink", INT2OID, -1 },
+	{ "isdownload", INT2OID, -1 },
+	{ "isnotbounce", INT2OID, -1 },
+	{ "funiqid", INT8OID, -1 },
+	{ "originalurl", TEXTOID, -1 },
+	{ "hid", INT4OID, -1 },
+	{ "isoldcounter", INT2OID, -1 },
+	{ "isevent", INT2OID, -1 },
+	{ "isparameter", INT2OID, -1 },
+	{ "dontcounthits", INT2OID, -1 },
+	{ "withhash", INT2OID, -1 },
+	{ "hitcolor", BPCHAROID, 5 },
+	{ "localeventtime", TIMESTAMPOID, -1 },
+	{ "age", INT2OID, -1 },
+	{ "sex", INT2OID, -1 },
+	{ "income", INT2OID, -1 },
+	{ "interests", INT2OID, -1 },
+	{ "robotness", INT2OID, -1 },
+	{ "remoteip", INT4OID, -1 },
+	{ "windowname", INT4OID, -1 },
+	{ "openername", INT4OID, -1 },
+	{ "historylength", INT2OID, -1 },
+	{ "browserlanguage", TEXTOID, -1 },
+	{ "browsercountry", TEXTOID, -1 },
+	{ "socialnetwork", TEXTOID, -1 },
+	{ "socialaction", TEXTOID, -1 },
+	{ "httperror", INT2OID, -1 },
+	{ "sendtiming", INT4OID, -1 },
+	{ "dnstiming", INT4OID, -1 },
+	{ "connecttiming", INT4OID, -1 },
+	{ "responsestarttiming", INT4OID, -1 },
+	{ "responseendtiming", INT4OID, -1 },
+	{ "fetchtiming", INT4OID, -1 },
+	{ "socialsourcenetworkid", INT2OID, -1 },
+	{ "socialsourcepage", TEXTOID, -1 },
+	{ "paramprice", INT8OID, -1 },
+	{ "paramorderid", TEXTOID, -1 },
+	{ "paramcurrency", TEXTOID, -1 },
+	{ "paramcurrencyid", INT2OID, -1 },
+	{ "openstatservicename", TEXTOID, -1 },
+	{ "openstatcampaignid", TEXTOID, -1 },
+	{ "openstatadid", TEXTOID, -1 },
+	{ "openstatsourceid", TEXTOID, -1 },
+	{ "utmsource", TEXTOID, -1 },
+	{ "utmmedium", TEXTOID, -1 },
+	{ "utmcampaign", TEXTOID, -1 },
+	{ "utmcontent", TEXTOID, -1 },
+	{ "utmterm", TEXTOID, -1 },
+	{ "fromtag", TEXTOID, -1 },
+	{ "hasgclid", INT2OID, -1 },
+	{ "refererhash", INT8OID, -1 },
+	{ "urlhash", INT8OID, -1 },
+	{ "clid", INT4OID, -1 }
+};
+
+static PgPlannerRelationInfo hits_table_info = {
+	.relid = 1338,
+	.relname = "hits",
+	.relkind = 'r',		/* RELKIND_RELATION */
+	.natts = 105,
+	.columns = hits_table_columns
+};
+
+static PgPlannerRelationInfo *
+sample_get_relation(const char *schemaname, const char *relname)
+{
+	if (strcmp(relname, "my_table") == 0)
+		return &my_table_info;
+	if (strcmp(relname, "hits") == 0)
+		return &hits_table_info;
+	return NULL;
+}
+
+static PgPlannerRelationInfo *
+sample_get_relation_by_oid(Oid relid)
+{
+	if (relid == 1337)
+		return &my_table_info;
+	if (relid == 1338)
+		return &hits_table_info;
+	return NULL;
+}
+
+static PgPlannerOperatorInfo eq_op_info = {
+	.oprid = 96,		/* int4eq OID in standard PG */
+	.oprname = "=",
+	.oprnamespace = 11,	/* PG_CATALOG_NAMESPACE */
+	.oprowner = 10,		/* BOOTSTRAP_SUPERUSERID */
+	.oprkind = 'b',		/* binary */
+	.oprcanmerge = true,
+	.oprcanhash = true,
+	.oprcode = 65,		/* int4eq function OID */
+	.oprleft = 23,		/* INT4OID */
+	.oprright = 23,
+	.oprresult = 16,	/* BOOLOID */
+	.oprcom = 96,		/* commutator is itself */
+	.oprnegate = 518,	/* int4ne */
+	.oprrest = 101,		/* eqsel */
+	.oprjoin = 105		/* eqjoinsel */
+};
+
+static PgPlannerOperatorInfo *
+sample_get_operator(const char *opname, Oid left_type, Oid right_type)
+{
+	if (left_type == INT4OID && right_type == INT4OID)
+		return &eq_op_info;
+	return NULL;
+}
+
+static PgPlannerOperatorInfo *
+sample_get_operator_by_oid(Oid oproid)
+{
+	if (oproid == 96)
+		return &eq_op_info;
+	return NULL;
+}
+
+static PgPlannerTypeInfo int4_type_info = {
+	.typlen = 4, .typbyval = true, .typalign = 'i', .typtype = 'b',
+	.typbasetype = 0, .typtypmod = -1,
+	.typname = "int4", .typnamespace = 11, .typowner = 10,
+	.typcategory = 'N', .typispreferred = false, .typisdefined = true,
+	.typdelim = ',', .typrelid = 0, .typsubscript = 0,
+	.typelem = 0, .typarray = 1007,
+	.typinput = 42, .typoutput = 43, .typreceive = 2406, .typsend = 2407,
+	.typmodin = 0, .typmodout = 0, .typanalyze = 0,
+	.typstorage = 'p', .typnotnull = false, .typndims = 0, .typcollation = 0
+};
+
+static PgPlannerTypeInfo bool_type_info = {
+	.typlen = 1, .typbyval = true, .typalign = 'c', .typtype = 'b',
+	.typbasetype = 0, .typtypmod = -1,
+	.typname = "bool", .typnamespace = 11, .typowner = 10,
+	.typcategory = 'B', .typispreferred = true, .typisdefined = true,
+	.typdelim = ',', .typrelid = 0, .typsubscript = 0,
+	.typelem = 0, .typarray = 1000,
+	.typinput = 1242, .typoutput = 1243, .typreceive = 2436, .typsend = 2437,
+	.typmodin = 0, .typmodout = 0, .typanalyze = 0,
+	.typstorage = 'p', .typnotnull = false, .typndims = 0, .typcollation = 0
+};
+
+static PgPlannerTypeInfo int8_type_info = {
+	.typlen = 8, .typbyval = true, .typalign = 'd', .typtype = 'b',
+	.typbasetype = 0, .typtypmod = -1,
+	.typname = "int8", .typnamespace = 11, .typowner = 10,
+	.typcategory = 'N', .typispreferred = false, .typisdefined = true,
+	.typdelim = ',', .typrelid = 0, .typsubscript = 0,
+	.typelem = 0, .typarray = 1016,
+	.typinput = 461, .typoutput = 462, .typreceive = 2408, .typsend = 2409,
+	.typmodin = 0, .typmodout = 0, .typanalyze = 0,
+	.typstorage = 'p', .typnotnull = false, .typndims = 0, .typcollation = 0
+};
+
+static PgPlannerTypeInfo int2_type_info = {
+	.typlen = 2, .typbyval = true, .typalign = 's', .typtype = 'b',
+	.typbasetype = 0, .typtypmod = -1,
+	.typname = "int2", .typnamespace = 11, .typowner = 10,
+	.typcategory = 'N', .typispreferred = false, .typisdefined = true,
+	.typdelim = ',', .typrelid = 0, .typsubscript = 0,
+	.typelem = 0, .typarray = 1005,
+	.typinput = 38, .typoutput = 39, .typreceive = 2404, .typsend = 2405,
+	.typmodin = 0, .typmodout = 0, .typanalyze = 0,
+	.typstorage = 'p', .typnotnull = false, .typndims = 0, .typcollation = 0
+};
+
+static PgPlannerTypeInfo text_type_info = {
+	.typlen = -1, .typbyval = false, .typalign = 'i', .typtype = 'b',
+	.typbasetype = 0, .typtypmod = -1,
+	.typname = "text", .typnamespace = 11, .typowner = 10,
+	.typcategory = 'S', .typispreferred = true, .typisdefined = true,
+	.typdelim = ',', .typrelid = 0, .typsubscript = 0,
+	.typelem = 0, .typarray = 1009,
+	.typinput = 46, .typoutput = 47, .typreceive = 2414, .typsend = 2415,
+	.typmodin = 0, .typmodout = 0, .typanalyze = 0,
+	.typstorage = 'x', .typnotnull = false, .typndims = 0, .typcollation = 100
+};
+
+static PgPlannerTypeInfo timestamp_type_info = {
+	.typlen = 8, .typbyval = true, .typalign = 'd', .typtype = 'b',
+	.typbasetype = 0, .typtypmod = -1,
+	.typname = "timestamp", .typnamespace = 11, .typowner = 10,
+	.typcategory = 'D', .typispreferred = false, .typisdefined = true,
+	.typdelim = ',', .typrelid = 0, .typsubscript = 0,
+	.typelem = 0, .typarray = 1115,
+	.typinput = 1312, .typoutput = 1313, .typreceive = 2474, .typsend = 2475,
+	.typmodin = 2905, .typmodout = 2906, .typanalyze = 0,
+	.typstorage = 'p', .typnotnull = false, .typndims = 0, .typcollation = 0
+};
+
+static PgPlannerTypeInfo date_type_info = {
+	.typlen = 4, .typbyval = true, .typalign = 'i', .typtype = 'b',
+	.typbasetype = 0, .typtypmod = -1,
+	.typname = "date", .typnamespace = 11, .typowner = 10,
+	.typcategory = 'D', .typispreferred = false, .typisdefined = true,
+	.typdelim = ',', .typrelid = 0, .typsubscript = 0,
+	.typelem = 0, .typarray = 1182,
+	.typinput = 1084, .typoutput = 1085, .typreceive = 2468, .typsend = 2469,
+	.typmodin = 0, .typmodout = 0, .typanalyze = 0,
+	.typstorage = 'p', .typnotnull = false, .typndims = 0, .typcollation = 0
+};
+
+static PgPlannerTypeInfo varchar_type_info = {
+	.typlen = -1, .typbyval = false, .typalign = 'i', .typtype = 'b',
+	.typbasetype = 0, .typtypmod = -1,
+	.typname = "varchar", .typnamespace = 11, .typowner = 10,
+	.typcategory = 'S', .typispreferred = false, .typisdefined = true,
+	.typdelim = ',', .typrelid = 0, .typsubscript = 0,
+	.typelem = 0, .typarray = 1015,
+	.typinput = 1046, .typoutput = 1047, .typreceive = 2432, .typsend = 2433,
+	.typmodin = 2915, .typmodout = 2916, .typanalyze = 0,
+	.typstorage = 'x', .typnotnull = false, .typndims = 0, .typcollation = 100
+};
+
+static PgPlannerTypeInfo bpchar_type_info = {
+	.typlen = -1, .typbyval = false, .typalign = 'i', .typtype = 'b',
+	.typbasetype = 0, .typtypmod = -1,
+	.typname = "bpchar", .typnamespace = 11, .typowner = 10,
+	.typcategory = 'S', .typispreferred = false, .typisdefined = true,
+	.typdelim = ',', .typrelid = 0, .typsubscript = 0,
+	.typelem = 0, .typarray = 1014,
+	.typinput = 1044, .typoutput = 1045, .typreceive = 2430, .typsend = 2431,
+	.typmodin = 2913, .typmodout = 2914, .typanalyze = 0,
+	.typstorage = 'x', .typnotnull = false, .typndims = 0, .typcollation = 100
+};
+
+static PgPlannerTypeInfo *
+sample_get_type(Oid typid)
+{
+	if (typid == INT4OID)
+		return &int4_type_info;
+	if (typid == BOOLOID)
+		return &bool_type_info;
+	if (typid == INT8OID)
+		return &int8_type_info;
+	if (typid == INT2OID)
+		return &int2_type_info;
+	if (typid == TEXTOID)
+		return &text_type_info;
+	if (typid == TIMESTAMPOID)
+		return &timestamp_type_info;
+	if (typid == DATEOID)
+		return &date_type_info;
+	if (typid == VARCHAROID)
+		return &varchar_type_info;
+	if (typid == BPCHAROID)
+		return &bpchar_type_info;
+	return NULL;
+}
+
+/* count(*) function info (OID 2803) */
+static PgPlannerFunctionInfo count_func_info = {
+	.retset = false,
+	.rettype = 20,		/* INT8OID */
+	.prokind = 'a',		/* aggregate */
+	.proisstrict = false,
+	.pronargs = 0,
+	.proargtypes = NULL,
+	.provariadic = 0,	/* InvalidOid */
+	.proname = "count",
+	.pronamespace = 11,	/* PG_CATALOG_NAMESPACE */
+	.provolatile = 'i',
+	.proparallel = 's'
+};
+
+/* int8inc transition function (OID 2804) */
+static PgPlannerFunctionInfo int8inc_func_info = {
+	.retset = false,
+	.rettype = 20,		/* INT8OID */
+	.prokind = 'f',
+	.proisstrict = true,
+	.pronargs = 1,
+	.proargtypes = (Oid[]){20},	/* INT8OID */
+	.provariadic = 0,
+	.proname = "int8inc",
+	.pronamespace = 11,
+	.provolatile = 'i',
+	.proparallel = 's'
+};
+
+/* int8pl combine function (OID 1279) */
+static PgPlannerFunctionInfo int8pl_func_info = {
+	.retset = false,
+	.rettype = 20,		/* INT8OID */
+	.prokind = 'f',
+	.proisstrict = true,
+	.pronargs = 2,
+	.proargtypes = (Oid[]){20, 20},
+	.provariadic = 0,
+	.proname = "int8pl",
+	.pronamespace = 11,
+	.provolatile = 'i',
+	.proparallel = 's'
+};
+
+static PgPlannerFunctionInfo int4eq_func_info = {
+	.retset = false,
+	.rettype = 16,		/* BOOLOID */
+	.prokind = 'f',
+	.proisstrict = true,
+	.pronargs = 2,
+	.proargtypes = (Oid[]){23, 23},
+	.provariadic = 0,
+	.proname = "int4eq",
+	.pronamespace = 11,
+	.provolatile = 'i',
+	.proparallel = 's'
+};
+
+/* int24: int2 -> int4 cast (OID 313) */
+static PgPlannerFunctionInfo int24_func_info = {
+	.retset = false, .rettype = 23, .prokind = 'f', .proisstrict = true,
+	.pronargs = 1, .proargtypes = (Oid[]){21}, .provariadic = 0,
+	.proname = "int4", .pronamespace = 11, .provolatile = 'i', .proparallel = 's'
+};
+
+/* int28: int2 -> int8 cast (OID 754) */
+static PgPlannerFunctionInfo int28_func_info = {
+	.retset = false, .rettype = 20, .prokind = 'f', .proisstrict = true,
+	.pronargs = 1, .proargtypes = (Oid[]){21}, .provariadic = 0,
+	.proname = "int8", .pronamespace = 11, .provolatile = 'i', .proparallel = 's'
+};
+
+/* int48: int4 -> int8 cast (OID 481) */
+static PgPlannerFunctionInfo int48_func_info = {
+	.retset = false, .rettype = 20, .prokind = 'f', .proisstrict = true,
+	.pronargs = 1, .proargtypes = (Oid[]){23}, .provariadic = 0,
+	.proname = "int8", .pronamespace = 11, .provolatile = 'i', .proparallel = 's'
+};
+
+/* date_timestamp: date -> timestamp cast (OID 2024) */
+static PgPlannerFunctionInfo date_timestamp_func_info = {
+	.retset = false, .rettype = 1114, .prokind = 'f', .proisstrict = true,
+	.pronargs = 1, .proargtypes = (Oid[]){1082}, .provariadic = 0,
+	.proname = "timestamp", .pronamespace = 11, .provolatile = 'i', .proparallel = 's'
+};
+
+/* bpchartext: bpchar -> text cast (OID 401) */
+static PgPlannerFunctionInfo bpchartext_func_info = {
+	.retset = false, .rettype = 25, .prokind = 'f', .proisstrict = true,
+	.pronargs = 1, .proargtypes = (Oid[]){1042}, .provariadic = 0,
+	.proname = "text", .pronamespace = 11, .provolatile = 'i', .proparallel = 's'
+};
+
+static PgPlannerFunctionInfo *
+sample_get_function(Oid funcid)
+{
+	if (funcid == 2803)
+		return &count_func_info;
+	if (funcid == 2804)
+		return &int8inc_func_info;
+	if (funcid == 1279)
+		return &int8pl_func_info;
+	if (funcid == 65)
+		return &int4eq_func_info;
+	if (funcid == 313)
+		return &int24_func_info;
+	if (funcid == 754)
+		return &int28_func_info;
+	if (funcid == 481)
+		return &int48_func_info;
+	if (funcid == 2024)
+		return &date_timestamp_func_info;
+	if (funcid == 401)
+		return &bpchartext_func_info;
+	return NULL;
+}
+
+/* count(*) function candidate */
+static PgPlannerFuncCandidate count_candidate = {
+	.oid = 2803,
+	.nargs = 0,
+	.argtypes = NULL,
+	.variadic_type = 0,		/* InvalidOid */
+	.ndargs = 0
+};
+
+static int
+sample_get_func_candidates(const char *funcname,
+						   PgPlannerFuncCandidate **candidates_out)
+{
+	if (strcmp(funcname, "count") == 0)
+	{
+		*candidates_out = &count_candidate;
+		return 1;
+	}
+	*candidates_out = NULL;
+	return 0;
+}
+
+/* count aggregate info */
+static PgPlannerAggregateInfo count_agg_info = {
+	.aggkind = 'n',
+	.aggnumdirectargs = 0,
+	.aggtransfn = 2804,		/* int8inc */
+	.aggfinalfn = 0,		/* InvalidOid */
+	.aggcombinefn = 1279,	/* int8pl */
+	.aggserialfn = 0,
+	.aggdeserialfn = 0,
+	.aggtranstype = 20,		/* INT8OID */
+	.aggtransspace = 0,
+	.aggfinalmodify = 'r',	/* read-only */
+	.aggsortop = 0,			/* InvalidOid */
+	.agginitval = "0"
+};
+
+static PgPlannerAggregateInfo *
+sample_get_aggregate(Oid aggfnoid)
+{
+	if (aggfnoid == 2803)
+		return &count_agg_info;
+	return NULL;
+}
+
 /*
- * Any Postgres server process begins execution here.
+ * Demo main: plan a simple query using the callback-based API.
  */
 int
 main(int argc, char *argv[])
 {
-	bool		do_check_root = true;
+	PlannedStmt *stmt;
+	char	   *str;
 
-	reached_main = true;
+	PgPlannerCallbacks callbacks = {
+		.get_relation = sample_get_relation,
+		.get_relation_by_oid = sample_get_relation_by_oid,
+		.get_operator = sample_get_operator,
+		.get_operator_by_oid = sample_get_operator_by_oid,
+		.get_type = sample_get_type,
+		.get_function = sample_get_function,
+		.get_func_candidates = sample_get_func_candidates,
+		.get_aggregate = sample_get_aggregate
+	};
 
-	/*
-	 * If supported on the current platform, set up a handler to be called if
-	 * the backend/postmaster crashes with a fatal signal or exception.
-	 */
-#if defined(WIN32)
-	pgwin32_install_crashdump_handler();
-#endif
+	pgplanner_init();
 
-	progname = get_progname(argv[0]);
+	stmt = pgplanner_plan_query("SELECT AdvEngineID, COUNT(*) FROM hits WHERE AdvEngineID <> 0 GROUP BY AdvEngineID ORDER BY COUNT(*) DESC;", &callbacks);
 
-	/*
-	 * Platform-specific startup hacks
-	 */
-	startup_hacks(progname);
+	str = nodeToString(stmt);
+	printf("PlannedStmt: %s\n", str);
+	pfree(str);
 
-	/*
-	 * Remember the physical location of the initially given argv[] array for
-	 * possible use by ps display.  On some platforms, the argv[] storage must
-	 * be overwritten in order to set the process title for ps. In such cases
-	 * save_ps_display_args makes and returns a new copy of the argv[] array.
-	 *
-	 * save_ps_display_args may also move the environment strings to make
-	 * extra room. Therefore this should be done as early as possible during
-	 * startup, to avoid entanglements with code that might save a getenv()
-	 * result pointer.
-	 */
-	argv = save_ps_display_args(argc, argv);
-
-	/*
-	 * Fire up essential subsystems: error and memory management
-	 *
-	 * Code after this point is allowed to use elog/ereport, though
-	 * localization of messages may not work right away, and messages won't go
-	 * anywhere but stderr until GUC settings get loaded.
-	 */
-	MemoryContextInit();
-
-	/*
-	 * Set up locale information
-	 */
-	set_pglocale_pgservice(argv[0], PG_TEXTDOMAIN("postgres"));
-
-	/*
-	 * In the postmaster, absorb the environment values for LC_COLLATE and
-	 * LC_CTYPE.  Individual backends will change these later to settings
-	 * taken from pg_database, but the postmaster cannot do that.  If we leave
-	 * these set to "C" then message localization might not work well in the
-	 * postmaster.
-	 */
-	init_locale("LC_COLLATE", LC_COLLATE, "");
-	init_locale("LC_CTYPE", LC_CTYPE, "");
-
-	/*
-	 * LC_MESSAGES will get set later during GUC option processing, but we set
-	 * it here to allow startup error messages to be localized.
-	 */
-#ifdef LC_MESSAGES
-	init_locale("LC_MESSAGES", LC_MESSAGES, "");
-#endif
-
-	/*
-	 * We keep these set to "C" always, except transiently in pg_locale.c; see
-	 * that file for explanations.
-	 */
-	init_locale("LC_MONETARY", LC_MONETARY, "C");
-	init_locale("LC_NUMERIC", LC_NUMERIC, "C");
-	init_locale("LC_TIME", LC_TIME, "C");
-
-	/*
-	 * Now that we have absorbed as much as we wish to from the locale
-	 * environment, remove any LC_ALL setting, so that the environment
-	 * variables installed by pg_perm_setlocale have force.
-	 */
-	unsetenv("LC_ALL");
-
-	check_strxfrm_bug();
-
-	/*
-	 * Catch standard options before doing much else, in particular before we
-	 * insist on not being root.
-	 */
-	if (argc > 1)
-	{
-		if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-?") == 0)
-		{
-			help(progname);
-			exit(0);
-		}
-		if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)
-		{
-			fputs(PG_BACKEND_VERSIONSTR, stdout);
-			exit(0);
-		}
-
-		/*
-		 * In addition to the above, we allow "--describe-config" and "-C var"
-		 * to be called by root.  This is reasonably safe since these are
-		 * read-only activities.  The -C case is important because pg_ctl may
-		 * try to invoke it while still holding administrator privileges on
-		 * Windows.  Note that while -C can normally be in any argv position,
-		 * if you want to bypass the root check you must put it first.  This
-		 * reduces the risk that we might misinterpret some other mode's -C
-		 * switch as being the postmaster/postgres one.
-		 */
-		if (strcmp(argv[1], "--describe-config") == 0)
-			do_check_root = false;
-		else if (argc > 2 && strcmp(argv[1], "-C") == 0)
-			do_check_root = false;
-	}
-
-	/*
-	 * Make sure we are not running as root, unless it's safe for the selected
-	 * option.
-	 */
-	if (do_check_root)
-		check_root(progname);
-
-	/*
-	 * Dispatch to one of various subprograms depending on first argument.
-	 */
-
-	if (argc > 1 && strcmp(argv[1], "--check") == 0)
-		BootstrapModeMain(argc, argv, true);
-	else if (argc > 1 && strcmp(argv[1], "--boot") == 0)
-		BootstrapModeMain(argc, argv, false);
-#ifdef EXEC_BACKEND
-	else if (argc > 1 && strncmp(argv[1], "--fork", 6) == 0)
-		SubPostmasterMain(argc, argv);
-#endif
-	else if (argc > 1 && strcmp(argv[1], "--describe-config") == 0)
-		GucInfoMain();
-	else if (argc > 1 && strcmp(argv[1], "--single") == 0)
-		PostgresSingleUserMain(argc, argv,
-							   strdup(get_user_name_or_exit(progname)));
-	else
-		PostmasterMain(argc, argv);
-	/* the functions above should not return */
-	abort();
+	return 0;
 }
 
 

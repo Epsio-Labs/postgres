@@ -173,6 +173,32 @@ typedef struct
 static List *overrideStack = NIL;
 
 /*
+ * pgplanner_init_search_path
+ *		Pre-initialize the namespace search path for pgplanner mode.
+ *		Sets activeSearchPath to just pg_catalog and pushes a fake entry
+ *		onto overrideStack so that recomputeNamespacePath() returns
+ *		immediately without calling GetUserId().
+ */
+void
+pgplanner_init_search_path(void)
+{
+	OverrideStackEntry *entry;
+
+	activeSearchPath = list_make1_oid(PG_CATALOG_NAMESPACE);
+	activeCreationNamespace = PG_CATALOG_NAMESPACE;
+	activeTempCreationPending = false;
+	baseSearchPathValid = true;
+
+	/* Push a fake override entry so recomputeNamespacePath() is a no-op */
+	entry = (OverrideStackEntry *) palloc0(sizeof(OverrideStackEntry));
+	entry->searchPath = list_make1_oid(PG_CATALOG_NAMESPACE);
+	entry->creationNamespace = PG_CATALOG_NAMESPACE;
+	entry->nestLevel = 0;
+	overrideStack = list_make1(entry);
+
+}
+
+/*
  * myTempNamespace is InvalidOid until and unless a TEMP namespace is set up
  * in a particular backend session (this happens when a CREATE TEMP TABLE
  * command is first executed).  Thereafter it's the OID of the temp namespace.
@@ -3779,7 +3805,7 @@ FindDefaultConversionProc(int32 for_encoding, int32 to_encoding)
 static void
 recomputeNamespacePath(void)
 {
-	Oid			roleid = GetUserId();
+	Oid			roleid;
 	char	   *rawname;
 	List	   *namelist;
 	List	   *oidlist;
@@ -3793,6 +3819,8 @@ recomputeNamespacePath(void)
 	/* Do nothing if an override search spec is active. */
 	if (overrideStack)
 		return;
+
+	roleid = GetUserId();
 
 	/* Do nothing if path is already valid. */
 	if (baseSearchPathValid && namespaceUser == roleid)
